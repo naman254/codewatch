@@ -7,7 +7,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const privateKey = fs.readFileSync(process.env.GITHUB_PRIVATE_KEY_PATH!, 'utf8');
+const privateKey = fs.readFileSync(process.env.GITHUB_PRIVATE_KEY!, 'utf8');
 const ghApp = new App({
   appId: process.env.GITHUB_APP_ID!,
   privateKey: privateKey,
