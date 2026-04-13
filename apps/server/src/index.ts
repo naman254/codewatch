@@ -16,7 +16,11 @@ const PORT = process.env.PORT || 3001;
 // --- CONFIGURATION ---
 const MAX_DIFF_SIZE_BYTES = 100 * 1024; // 100 KB limit to protect costs
 
-const privateKey = fs.readFileSync(process.env.GITHUB_PRIVATE_KEY!, 'utf8');
+const privateKey = process.env.GITHUB_PRIVATE_KEY;
+
+if (!privateKey) {
+  throw new Error("GITHUB_PRIVATE_KEY is missing from environment variables");
+}
 
 const ghApp = new App({
   appId: process.env.GITHUB_APP_ID!,
