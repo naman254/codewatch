@@ -2,6 +2,8 @@
 
 CodeWatch is an automated code review agent that leverages a **120B parameter Reasoning Model** to provide deep, context-aware feedback on GitHub Pull Requests. Unlike traditional linters, CodeWatch understands the logic intent, catching architectural flaws, security risks, and complex bugs before they reach production.
 
+[![Install CodeWatch](https://img.shields.io/badge/Install-CodeWatch-green?style=for-the-badge&logo=github)](https://github.com/apps/codewatch1)
+
 ---
 
 ## Key Features
