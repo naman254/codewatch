@@ -2,7 +2,6 @@ import { Worker } from 'bullmq';
 import { redisConnection } from '../config/redis.js';
 import { analyzeCode } from '../ai.js';
 import { App } from 'octokit';
-import fs from 'fs';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -18,7 +17,9 @@ const ghApp = new App({
 });
 
 export const reviewWorker = new Worker('review-queue', async (job) => {
-  const { bucket, installationId, pullNumber, owner, repo, filePath } = job.data;
+  const { bucket, installationId, pullNumber, owner, repo, filePath, placeholderCommentId } = job.data;
+  const commentId = Number(placeholderCommentId);
+  const hasPlaceholderComment = Number.isFinite(commentId) && commentId > 0;
 
   console.log(`👷 Worker: Processing PR #${pullNumber} [Job ID: ${job.id}]`);
 
@@ -79,18 +80,48 @@ export const reviewWorker = new Worker('review-queue', async (job) => {
 *Detailed feedback has been added to the **Files changed** tab. Please address the critical items before merging.*
       `;
 
-      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-        owner,
-        repo,
-        issue_number: pullNumber,
-        body: summaryTable.trim(),
-      });
+      if (hasPlaceholderComment) {
+        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+          owner,
+          repo,
+          comment_id: commentId,
+          body: summaryTable.trim(),
+        });
+      } else {
+        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+          owner,
+          repo,
+          issue_number: pullNumber,
+          body: summaryTable.trim(),
+        });
+      }
 
       console.log(`✅ Posted ${aiReviews.length} comments and summary table to PR #${pullNumber}`);
     } else {
+      if (hasPlaceholderComment) {
+        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+          owner,
+          repo,
+          comment_id: commentId,
+          body: `✅ **CodeWatch AI Review Complete** for \`${filePath.split('/').pop()}\`\n\nNo issues were found in this chunk.`
+        });
+      }
       console.log(`✅ No issues found by AI for PR #${pullNumber}`);
     }
   } catch (error) {
+    if (hasPlaceholderComment) {
+      try {
+        const octokit = await ghApp.getInstallationOctokit(installationId);
+        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
+          owner,
+          repo,
+          comment_id: commentId,
+          body: `❌ **CodeWatch AI Review Failed** for \`${filePath.split('/').pop()}\`.\n\nPlease retry by pushing a new commit or re-opening this PR.`
+        });
+      } catch (patchError) {
+        console.error('❌ Failed to patch placeholder comment after worker error:', patchError);
+      }
+    }
     console.error("❌ Worker Error:", error);
     throw error; 
   }
