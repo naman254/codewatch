@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "proxy": "smee --url https://smee.io/3uxKLZgMAbZsya --target http://localhost:3001/webhook"
-  },
+    "build": "tsc",
+    "start": "node dist/index.js"
+},
   "keywords": [],
   "author": "",
   "license": "ISC",
