@@ -17,21 +17,21 @@ const ghApp = new App({
   privateKey: privateKey,
 });
 
-export const reviewWorker = new Worker('analyze-code', async (job) => {
-  // ONLY ADDED: commentId here
-  const { bucket, installationId, pullNumber, owner, repo, filePath, commentId } = job.data;
+export const reviewWorker = new Worker('review-queue', async (job) => {
+  const { bucket, installationId, pullNumber, owner, repo, filePath } = job.data;
 
   console.log(`👷 Worker: Processing PR #${pullNumber} [Job ID: ${job.id}]`);
 
   try {
     const octokit = await ghApp.getInstallationOctokit(installationId);
     
+    // 1. Get AI Analysis
     const aiReviews = await analyzeCode(bucket);
 
     console.log('📊 AI Reviews received:', JSON.stringify(aiReviews, null, 2));
 
     if (aiReviews && aiReviews.length > 0) {
-      // --- KEEP YOUR ORIGINAL POST REVIEWS LOGIC ---
+      // 2. Post Line-by-Line Comments
       await octokit.request('POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews', {
         owner,
         repo,
@@ -40,13 +40,11 @@ export const reviewWorker = new Worker('analyze-code', async (job) => {
         comments: aiReviews.map((r: any) => {
           const hasRange = r.endLine && Number(r.endLine) > Number(r.line);
           
-          // Fix for the 'any' type error we discussed
-          const severityMap: any = {
+          const severityMetadata = {
             CRITICAL: { icon: '🔴', label: 'CRITICAL' },
             MEDIUM: { icon: '🟡', label: 'MEDIUM' },
             LOW: { icon: '🔵', label: 'LOW' }
-          };
-          const severityMetadata = severityMap[r.severity] || { icon: '💡', label: 'SUGGESTION' };
+          }[r.severity as 'CRITICAL' | 'MEDIUM' | 'LOW'] || { icon: '💡', label: 'SUGGESTION' };
 
           return {
             path: r.file || filePath,
@@ -61,7 +59,7 @@ export const reviewWorker = new Worker('analyze-code', async (job) => {
         }),
       });
 
-      // --- KEEP YOUR ORIGINAL SUMMARY TABLE LOGIC ---
+      // 3. Generate and Post Summary Table
       const counts = {
         CRITICAL: aiReviews.filter((r: any) => r.severity === 'CRITICAL').length,
         MEDIUM: aiReviews.filter((r: any) => r.severity === 'MEDIUM').length,
@@ -81,26 +79,17 @@ export const reviewWorker = new Worker('analyze-code', async (job) => {
 *Detailed feedback has been added to the **Files changed** tab. Please address the critical items before merging.*
       `;
 
-      // --- ONLY CHANGE: Use PATCH if commentId exists ---
-      if (commentId) {
-        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
-          owner,
-          repo,
-          comment_id: commentId,
-          body: summaryTable.trim(),
-        });
-      } else {
-        // Fallback to your old way if for some reason commentId is missing
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-          owner,
-          repo,
-          issue_number: pullNumber,
-          body: summaryTable.trim(),
-        });
-      }
+      await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body: summaryTable.trim(),
+      });
 
-      console.log(`✅ Updated summary for PR #${pullNumber}`);
-    } 
+      console.log(`✅ Posted ${aiReviews.length} comments and summary table to PR #${pullNumber}`);
+    } else {
+      console.log(`✅ No issues found by AI for PR #${pullNumber}`);
+    }
   } catch (error) {
     console.error("❌ Worker Error:", error);
     throw error; 
