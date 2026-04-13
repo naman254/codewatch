@@ -1,7 +1,6 @@
 import express from 'express';
 import dotenv from 'dotenv';
 import { App } from 'octokit';
-import fs from 'fs';
 import parseDiff from 'parse-diff';
 import { createAIChunks } from './services/ai.service.js';
 import { reviewQueue } from './queues/reviewQueue.js';
@@ -38,6 +37,14 @@ app.post('/webhook', async (req, res) => {
 
     try {
       const octokit = await ghApp.getInstallationOctokit(installation.id);
+      const { data: placeholderComment } = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner: repository.owner.login,
+        repo: repository.name,
+        issue_number: pull_request.number,
+        body: '⏳ **CodeWatch AI is reviewing this PR.** Hang tight while I analyze the changes and prepare feedback.'
+      });
+
+      const placeholderCommentId = placeholderComment.id;
       console.log(`🔍 Fetching diff for PR #${pull_request.number}...`);
 
       const { data: diff } = await octokit.request(
@@ -54,10 +61,10 @@ app.post('/webhook', async (req, res) => {
       if (typeof diff === 'string' && diff.length > MAX_DIFF_SIZE_BYTES) {
         console.warn(`⚠️ Skipping PR #${pull_request.number}: Diff size (${(diff.length / 1024).toFixed(2)} KB) exceeds limit.`);
         
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
           owner: repository.owner.login,
           repo: repository.name,
-          issue_number: pull_request.number,
+          comment_id: placeholderCommentId,
           body: `⚠️ **AI Review Skipped**: This Pull Request contains a very large diff (${(diff.length / 1024).toFixed(2)} KB). To maintain quality and performance, please break these changes into smaller, focused PRs.`
         });
 
@@ -83,10 +90,10 @@ app.post('/webhook', async (req, res) => {
 
         console.warn(`🚫 Rate limit hit for Repo ID: ${repository.id} (${currentUsage} calls)`);
 
-        await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        await octokit.request('PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}', {
           owner: repository.owner.login,
           repo: repository.name,
-          issue_number: pull_request.number,
+          comment_id: placeholderCommentId,
           body: `🚫 **Rate Limit Exceeded**: This repository has reached its limit of ${MAX_REVIEWS_PER_HOUR} AI reviews per hour. Please try again in ${minutesLeft} minutes.`
         });
 
@@ -110,7 +117,8 @@ app.post('/webhook', async (req, res) => {
           pullNumber: pull_request.number,
           owner: repository.owner.login,
           repo: repository.name,
-          filePath: fileName 
+          filePath: fileName,
+          placeholderCommentId
         });
       }
 
