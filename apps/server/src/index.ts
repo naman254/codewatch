@@ -5,7 +5,7 @@ import fs from 'fs';
 import parseDiff from 'parse-diff';
 import { createAIChunks } from './services/ai.service.js';
 import { reviewQueue } from './queues/reviewQueue.js';
-import './workers/reviewWorker.js'
+import './workers/reviewWorker.js';
 import { redisConnection } from './config/redis.js';
 
 dotenv.config();
@@ -14,7 +14,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // --- CONFIGURATION ---
-const MAX_DIFF_SIZE_BYTES = 100 * 1024; // 100 KB limit to protect costs
+const MAX_DIFF_SIZE_BYTES = 100 * 1024; // 100 KB limit
 
 const privateKey = process.env.GITHUB_PRIVATE_KEY;
 
@@ -38,62 +38,62 @@ app.post('/webhook', async (req, res) => {
 
     try {
       const octokit = await ghApp.getInstallationOctokit(installation.id);
-      console.log(`🔍 Fetching diff for PR #${pull_request.number}...`);
+      const owner = repository.owner.login;
+      const repo = repository.name;
+      const pullNumber = pull_request.number;
+
+      console.log(`🔍 Fetching diff for PR #${pullNumber}...`);
 
       const { data: diff } = await octokit.request(
         "GET /repos/{owner}/{repo}/pulls/{pull_number}",
         {
-          owner: repository.owner.login,
-          repo: repository.name,
-          pull_number: pull_request.number,
+          owner,
+          repo,
+          pull_number: pullNumber,
           mediaType: { format: "diff" },
         }
       ) as unknown as { data: string };
 
       // --- PROTECTION LAYER 1: SIZE CHECK ---
       if (typeof diff === 'string' && diff.length > MAX_DIFF_SIZE_BYTES) {
-        console.warn(`⚠️ Skipping PR #${pull_request.number}: Diff size (${(diff.length / 1024).toFixed(2)} KB) exceeds limit.`);
-        
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-          owner: repository.owner.login,
-          repo: repository.name,
-          issue_number: pull_request.number,
-          body: `⚠️ **AI Review Skipped**: This Pull Request contains a very large diff (${(diff.length / 1024).toFixed(2)} KB). To maintain quality and performance, please break these changes into smaller, focused PRs.`
+          owner,
+          repo,
+          issue_number: pullNumber,
+          body: `⚠️ **AI Review Skipped**: Diff size (${(diff.length / 1024).toFixed(2)} KB) exceeds limit.`
         });
-
         return res.status(200).send('Diff too large');
       }
 
-      // --- PROTECTION LAYER 2: RATE LIMIT PER REPO ---
+      // --- PROTECTION LAYER 2: RATE LIMIT ---
       const RATE_LIMIT_WINDOW = 3600; 
       const MAX_REVIEWS_PER_HOUR = 10;
       const rateLimitKey = `rate-limit:repo:${repository.id}`;
-
-      
       const currentUsage = await redisConnection.incr(rateLimitKey);
 
-      if (currentUsage === 1) {
-        await redisConnection.expire(rateLimitKey, RATE_LIMIT_WINDOW);
-      }
+      if (currentUsage === 1) await redisConnection.expire(rateLimitKey, RATE_LIMIT_WINDOW);
 
-      // Check if limit exceeded
       if (currentUsage > MAX_REVIEWS_PER_HOUR) {
         const ttl = await redisConnection.ttl(rateLimitKey);
-        const minutesLeft = Math.ceil(ttl / 60);
-
-        console.warn(`🚫 Rate limit hit for Repo ID: ${repository.id} (${currentUsage} calls)`);
-
         await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
-          owner: repository.owner.login,
-          repo: repository.name,
-          issue_number: pull_request.number,
-          body: `🚫 **Rate Limit Exceeded**: This repository has reached its limit of ${MAX_REVIEWS_PER_HOUR} AI reviews per hour. Please try again in ${minutesLeft} minutes.`
+          owner,
+          repo,
+          issue_number: pullNumber,
+          body: `🚫 **Rate Limit Exceeded**: Try again in ${Math.ceil(ttl / 60)} minutes.`
         });
-
         return res.status(429).send('Rate limit exceeded');
       }
 
-      // --- END OF LAYER 2 ---
+      // --- INITIAL STATUS COMMENT ---
+      // We post this once so the user knows CodeWatch is alive.
+      const initialComment = await octokit.request('POST /repos/{owner}/{repo}/issues/{issue_number}/comments', {
+        owner,
+        repo,
+        issue_number: pullNumber,
+        body: "🛡️ **CodeWatch** is analyzing your changes using the **GPT-OSS 120B model**... Hang tight! 🚀"
+      });
+
+      const commentId = initialComment.data.id;
 
       const files = parseDiff(diff);
       const aiBuckets = createAIChunks(files);
@@ -107,10 +107,11 @@ app.post('/webhook', async (req, res) => {
         await reviewQueue.add('analyze-code', {
           bucket,
           installationId: installation.id,
-          pullNumber: pull_request.number,
-          owner: repository.owner.login,
-          repo: repository.name,
-          filePath: fileName 
+          pullNumber,
+          owner,
+          repo,
+          filePath: fileName,
+          commentId // Pass this to the worker so it can update this specific comment
         });
       }
 
