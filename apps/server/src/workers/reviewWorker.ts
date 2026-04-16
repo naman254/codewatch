@@ -125,4 +125,6 @@ export const reviewWorker = new Worker('review-queue', async (job) => {
     console.error("❌ Worker Error:", error);
     throw error; 
   }
-}, { connection: redisConnection });
+}, { connection: redisConnection,
+  concurrency:5,
+ });
