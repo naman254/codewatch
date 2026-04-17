@@ -126,5 +126,8 @@ export const reviewWorker = new Worker('review-queue', async (job) => {
     throw error; 
   }
 }, { connection: redisConnection,
-  concurrency:5,
+  concurrency: 5,
+  lockDuration: 60000,      // Keep lock for 1 minute
+  lockRenewTime: 15000,     // Renew every 15s instead of every 1s
+  stalledInterval: 60000,
  });
