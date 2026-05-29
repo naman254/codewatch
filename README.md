@@ -1,64 +1,122 @@
-# CodeWatch AI
+# CodeWatch
 
-CodeWatch is an automated code review agent that leverages a **120B parameter Reasoning Model** to provide deep, context-aware feedback on GitHub Pull Requests. Unlike traditional linters, CodeWatch understands the logic intent, catching architectural flaws, security risks, and complex bugs before they reach production.
+CodeWatch is a GitHub App that automatically reviews every pull request using a 120B parameter LLM. When you open a PR it fetches the diff, chunks it into token-aware segments using bin packing, sends each chunk to the model with a structured prompt, and posts the results as inline comments on the exact changed lines — the same way a human reviewer would.
 
-[![Install CodeWatch](https://img.shields.io/badge/Install-CodeWatch-green?style=for-the-badge&logo=github)](https://github.com/apps/codewatch1)
+The smallest useful version: install it on a repo, open a PR, get line-level feedback without asking anyone.
+
+<p align="center">
+  <a href="https://drive.google.com/file/d/1b5Yq-9E9MgM398rGQ6072eYVSFH2t5tE/view">
+    <img src="https://img.shields.io/badge/Watch-Demo-blue?style=for-the-badge&logo=youtube" alt="Demo">
+  </a>
+  <a href="https://github.com/apps/codewatch1">
+    <img src="https://img.shields.io/badge/Install-CodeWatch-green?style=for-the-badge&logo=github" alt="Install CodeWatch">
+  </a>
+</p>
 
 ---
 
-## Key Features
+## Why I Built This
 
-* **Deep Reasoning Reviews:** Uses high-capacity LLMs (GPT-OSS 120B) to provide suggestions that go beyond syntax.
-* **Asynchronous Processing:** Built with a resilient task queue (BullMQ + Redis) to handle long-running AI inference without blocking the server.
-* **Production Ready:** Optimized for cloud deployment with Docker, health checks, and secure environment handling.
-* **Actionable Suggestions:** Provides line-by-line feedback directly within the GitHub PR conversation.
+As a solo developer I open PRs on my own repos constantly but have no one to review them. I'd either merge unreviewed code and catch bugs later, or spend time reviewing my own work which defeats the purpose. I wanted something that would give me an actual second opinion — not just linting errors but real feedback on logic, security, and architecture.
+
+I also wanted to understand how webhook-driven async systems work under the hood, so building this was as much about learning the infrastructure as solving the problem. The interesting engineering turned out to be less about the LLM and more about how to reliably process GitHub events, chunk diffs without losing context, and post structured feedback back to the right line numbers.
 
 ---
 
+## How to Run It
 
+Prereqs: Node.js 20+, npm, Redis (Upstash or local), GitHub App credentials.
 
-## Technical Architecture
+**1. Install dependencies**
 
-* **Brain:** GPT-OSS 120B Reasoning Model for high-fidelity code analysis.
-* **Server:** **Express.js (Node.js)** custom microservice architecture.
-* **GitHub Integration:** **Octokit SDK** for authenticated REST API interactions and PR management.
-* **Diff Parsing:** `parse-diff` for granular, line-by-line code analysis.
-* **Task Queue:** **BullMQ + ioredis** for resilient, asynchronous job processing.
-* **Tokenization:** `js-tiktoken` for precise context window management.
----
-
-## Installation & Setup
-
-### 1. Prerequisites
-* **Node.js 20+** & npm
-* **GitHub App** (Private Key, App ID, and Webhook Secret)
-* **Upstash Redis** (TLS enabled)
-* **DigitalOcean AI** Access Key
-
-### 2. Environment Variables
-Create a `.env` file in `apps/server/`:
-```
-PORT=3001
-GITHUB_APP_ID=your_id
-GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----..." # Paste full key as string
-GITHUB_WEBHOOK_SECRET=your_secret
-DO_GENAI_API_KEY=your_key
-REDIS_HOST=your_upstash_host
-REDIS_PORT=6379
-REDIS_PASSWORD=your_upstash_password
-REDIS_TLS=true
-```
-### 3. Running locally
-```
+```bash
 cd apps/server
 npm install
+```
 
-# Start the dev server
+**2. Create `apps/server/.env`**
+
+```env
+PORT=3001
+GITHUB_APP_ID=your_app_id
+GITHUB_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----..."
+GITHUB_WEBHOOK_SECRET=your_webhook_secret
+DO_GENAI_API_KEY=your_model_api_key
+REDIS_HOST=your_redis_host
+REDIS_PORT=6379
+REDIS_PASSWORD=your_redis_password
+REDIS_TLS=true
+```
+
+**3. Run in development**
+
+```bash
 npm run dev
 ```
-Note: To test webhooks locally, ensure you have the `proxy` script in your `package.json` (e.g., using Smee.io) and update your GitHub App settings to point to your proxy URL.
-```
-"proxy": "smee --url YOUR_URL --target http://localhost:3001/webhook"
-```
+
+To test webhooks locally use a tunnel (ngrok or Smee) and point your GitHub App webhook URL to the tunnel endpoint.
+
+**4. Install the app on a repo**
+
+Go to https://github.com/apps/codewatch1, click Install, select a repo. Open any PR — CodeWatch will post review comments automatically.
+
 ---
 
+## Architecture Decisions
+
+**Async processing over synchronous**
+
+The first decision was whether to process the review synchronously inside the webhook handler or offload it to a queue. GitHub expects a response within 10 seconds or it marks the webhook as failed and retries. LLM inference can take 10-30 seconds depending on diff size. The only real option was to return 200 immediately and process in the background. I used BullMQ + Redis for the queue — it handles retries, job persistence, and backpressure out of the box.
+
+**Bin packing for diff chunking, not naive line splitting**
+
+A large PR can have 3000+ changed lines across 30 files. Sending it all in one LLM call hits token limits. The naive solution — split every N lines — breaks context badly: a function definition ends up in chunk 1, its body in chunk 3, and the model loses the thread.
+
+I used bin packing instead: never mix two files in the same prompt (file-level partitioning as a hard rule), then pack as many whole files as fit within the token budget before starting a new chunk. Git hunks naturally include surrounding context lines, so the model gets function signatures even without explicit boundary detection. Fewer API calls, better context, lower cost.
+
+**parse-diff over manual diff parsing**
+
+Git diffs have enough edge cases (binary files, renames, mode changes, hunk headers) that writing a parser from scratch is a week of work for no benefit. parse-diff handles all of this and gives back a clean array of files with line numbers — exactly what Octokit needs to post inline comments.
+
+**Redis for rate limiting, not a database**
+
+To prevent a single repo from draining API credits I rate limit at 10 reviews per repo per 24 hours. Redis handles this with a simple INCR + EXPIRE — no database needed. Adding PostgreSQL just for this would be unnecessary infrastructure.
+
+---
+
+## What I Used AI For
+
+**AI-assisted:**
+- Initial BullMQ boilerplate (queue setup, worker registration) — I understood the pattern then rewrote most of it
+- Iterating on the review prompt template — I used AI to generate variations and picked the one that returned the most consistent structured JSON
+- Nginx config for the DigitalOcean deployment
+
+**Written by hand:**
+- Core webhook handler and signature verification logic — security-sensitive, didn't trust AI output here
+- Diff chunking and bin packing algorithm — this is the main interview talking point, needed to understand every line
+- GitHub App JWT authentication flow — too easy to get subtly wrong with AI
+- Rate limiting logic in Redis
+- All deployment and Docker configuration
+
+**Where I overrode AI suggestions:**
+- AI kept suggesting to process reviews synchronously "for simplicity." Wrong — would cause webhook timeouts on any real PR
+- AI suggested naive line-count chunking for diffs. Replaced with file-level bin packing after reasoning through the context contamination problem
+- AI-generated error handling was too broad (catch-all try/catch everywhere). Replaced with specific error types so failures are debuggable
+
+---
+
+## What I'd Change With 4 More Weeks
+
+**Repo-level RAG** is the most impactful addition. Right now CodeWatch only sees what changed in the diff. If a function signature changes it doesn't know 5 other files call that function. With repo-level RAG — embedding the codebase into a vector database and retrieving related code at review time — it would catch cross-file issues that diff-only review misses entirely.
+
+**A lightweight dashboard** showing review history per repo, aggregate issue patterns across PRs (how many security issues this month, which files get flagged most), and a manual re-review button. Right now everything happens inside GitHub with no visibility outside of individual PRs.
+
+**Per-repo prompt calibration** — let repo owners specify their stack, coding standards, and what to focus on (security, performance, style). Right now the prompt is generic. A TypeScript repo and a Python ML repo need different review criteria.
+
+---
+
+## Contact / Demo
+
+- Source: [github.com/naman254/codewatch](https://github.com/naman254/codewatch)
+- Demo: (link to screencast)
+- Install: [github.com/apps/codewatch1](https://github.com/apps/codewatch1)
