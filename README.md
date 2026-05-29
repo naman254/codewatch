@@ -113,10 +113,4 @@ To prevent a single repo from draining API credits I rate limit at 10 reviews pe
 
 **Per-repo prompt calibration** — let repo owners specify their stack, coding standards, and what to focus on (security, performance, style). Right now the prompt is generic. A TypeScript repo and a Python ML repo need different review criteria.
 
----
 
-## Contact / Demo
-
-- Source: [github.com/naman254/codewatch](https://github.com/naman254/codewatch)
-- Demo: (link to screencast)
-- Install: [github.com/apps/codewatch1](https://github.com/apps/codewatch1)
